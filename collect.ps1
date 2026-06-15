@@ -6,11 +6,10 @@ param(
     [string]$TargetFolder
 )
 
-# Continue on errors — we handle them per-file below instead of crashing the whole script
-# "Continue" means PowerShell logs the error but keeps running
+# Continue on errors - we handle them per-file below instead of crashing
 $ErrorActionPreference = "Continue"
 
-# ── Validate input ────────────────────────────────────────────────────────────
+# -- Validate input -----------------------------------------------------------
 
 if (-not (Test-Path -Path $TargetFolder -PathType Container)) {
     Write-Error "Folder not found: $TargetFolder"
@@ -19,24 +18,24 @@ if (-not (Test-Path -Path $TargetFolder -PathType Container)) {
 
 Write-Host "[*] Scanning folder: $TargetFolder" -ForegroundColor Cyan
 
-# ── Scan files ────────────────────────────────────────────────────────────────
+# -- Scan files ---------------------------------------------------------------
 
+# Get-ChildItem lists files; -Recurse goes into subfolders; -File skips folders
 $files = Get-ChildItem -Path $TargetFolder -Recurse -File
 
 Write-Host "[*] Found $($files.Count) file(s)" -ForegroundColor Cyan
 
-# ── Build inventory ───────────────────────────────────────────────────────────
+# -- Build inventory ----------------------------------------------------------
 
-$inventory = @()   # successfully processed files
-$skipped   = @()   # files we couldn't read (locked, no permission, etc.)
+$inventory = @()
+$skipped   = @()
 
 foreach ($file in $files) {
 
-    # Wrap each file in Try/Catch so one locked/protected file doesn't
-    # stop the entire scan — we log it and move on to the next file
+    # Try/Catch per file so one locked file does not stop the whole scan
     try {
 
-        # Get-FileHash will throw if the file is locked or unreadable
+        # Get-FileHash throws if file is locked or access is denied
         $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
 
         $entry = [PSCustomObject]@{
@@ -52,20 +51,20 @@ foreach ($file in $files) {
         $inventory += $entry
 
     } catch {
-        # $_.Exception.Message contains the actual error (e.g. "Access is denied")
-        Write-Warning "Skipped (cannot read): $($file.FullName) — $($_.Exception.Message)"
+        # Record which file failed and why, then continue to the next one
+        $reason = $_.Exception.Message
+        Write-Warning "Skipped (cannot read): $($file.FullName) - $reason"
 
-        # Record skipped files separately so the analyst knows what was missed
         $skipped += [PSCustomObject]@{
             FullPath = $file.FullName
-            Reason   = $_.Exception.Message
+            Reason   = $reason
         }
     }
 }
 
 Write-Host "[*] Processed: $($inventory.Count) file(s), Skipped: $($skipped.Count) file(s)" -ForegroundColor Cyan
 
-# ── Export to data/ ───────────────────────────────────────────────────────────
+# -- Export to data/ ----------------------------------------------------------
 
 $dataFolder = Join-Path $PSScriptRoot "data"
 
@@ -77,23 +76,24 @@ $csvPath     = Join-Path $dataFolder "inventory.csv"
 $jsonPath    = Join-Path $dataFolder "inventory.json"
 $skippedPath = Join-Path $dataFolder "skipped_files.txt"
 
-# ── CSV export ────────────────────────────────────────────────────────────────
+# -- CSV ----------------------------------------------------------------------
 
 $inventory | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
 Write-Host "[+] CSV saved      -> $csvPath" -ForegroundColor Green
 
-# ── JSON export ───────────────────────────────────────────────────────────────
+# -- JSON ---------------------------------------------------------------------
 
 # @() forces an array even when $inventory has only 1 item
 # Without this, ConvertTo-Json outputs {} instead of [{}] and breaks Python
-(@($inventory) | ConvertTo-Json -Depth 3) | Set-Content -Path $jsonPath -Encoding UTF8
+$json = @($inventory) | ConvertTo-Json -Depth 3
+$json | Set-Content -Path $jsonPath -Encoding UTF8
 Write-Host "[+] JSON saved     -> $jsonPath" -ForegroundColor Green
 
-# ── Skipped files log ─────────────────────────────────────────────────────────
+# -- Skipped files log --------------------------------------------------------
 
 if ($skipped.Count -gt 0) {
-    $skipped | ForEach-Object { "$($_.FullPath) — $($_.Reason)" } |
-        Set-Content -Path $skippedPath -Encoding UTF8
+    $lines = $skipped | ForEach-Object { "$($_.FullPath) - $($_.Reason)" }
+    $lines | Set-Content -Path $skippedPath -Encoding UTF8
     Write-Host "[!] Skipped log    -> $skippedPath ($($skipped.Count) file(s))" -ForegroundColor Yellow
 }
 
