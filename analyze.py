@@ -23,6 +23,15 @@ UNUSUAL_PATH_FRAGMENTS = [
     "/tmp/", "/temp/",
 ]
 
+# Path fragments that whitelist .js files from being flagged as suspicious.
+# A .js file inside node_modules, a build output, or a known framework folder
+# is almost certainly legitimate — flagging it is noise, not signal.
+JS_WHITELIST_PATH_FRAGMENTS = [
+    "node_modules", "dist", "build", ".next", ".nuxt",
+    "vendor", "bower_components", "public/js", "static/js",
+    "assets/js", "wwwroot",
+]
+
 RISK_HIGH   = 3
 RISK_MEDIUM = 1
 
@@ -174,9 +183,23 @@ def has_double_extension(filename: str) -> bool:
     return len(Path(filename).suffixes) >= 2
 
 
-def has_sensitive_extension(extension: str) -> bool:
-    """Check if extension is in our executable/abused watchlist."""
-    return extension.lower() in SENSITIVE_EXTENSIONS
+def has_sensitive_extension(extension: str, full_path: str = "") -> bool:
+    """
+    Check if extension is in our executable/abused watchlist.
+    .js is special-cased: whitelisted when found inside known framework/build folders
+    to avoid flooding reports with false positives from Node.js projects.
+    """
+    ext = extension.lower()
+    if ext not in SENSITIVE_EXTENSIONS:
+        return False
+
+    # .js in a known framework/build path → not suspicious
+    if ext == ".js":
+        path_lower = full_path.lower()
+        if any(fragment in path_lower for fragment in JS_WHITELIST_PATH_FRAGMENTS):
+            return False
+
+    return True
 
 
 def is_unusual_path(full_path: str) -> bool:
@@ -198,7 +221,7 @@ def score_file(entry: dict) -> tuple[int, list[str]]:
         score += 3
         reasons.append("Double extension detected (e.g. file.pdf.exe)")
 
-    if has_sensitive_extension(entry["Extension"]):
+    if has_sensitive_extension(entry["Extension"], entry["FullPath"]):
         score += 2
         reasons.append(f"Sensitive extension: {entry['Extension']}")
 

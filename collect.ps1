@@ -1,18 +1,17 @@
 # collect.ps1 - PowerShell file inventory collector
 # Usage: .\collect.ps1 -TargetFolder "C:\path\to\folder"
 
-# -TargetFolder is a required argument the user passes when running the script
 param(
     [Parameter(Mandatory=$true)]
     [string]$TargetFolder
 )
 
-# Stop the script immediately if any error occurs instead of silently continuing
-$ErrorActionPreference = "Stop"
+# Continue on errors — we handle them per-file below instead of crashing the whole script
+# "Continue" means PowerShell logs the error but keeps running
+$ErrorActionPreference = "Continue"
 
 # ── Validate input ────────────────────────────────────────────────────────────
 
-# Check the folder actually exists before doing anything
 if (-not (Test-Path -Path $TargetFolder -PathType Container)) {
     Write-Error "Folder not found: $TargetFolder"
     exit 1
@@ -22,58 +21,80 @@ Write-Host "[*] Scanning folder: $TargetFolder" -ForegroundColor Cyan
 
 # ── Scan files ────────────────────────────────────────────────────────────────
 
-# Get-ChildItem lists files; -Recurse goes into subfolders; -File skips folders
 $files = Get-ChildItem -Path $TargetFolder -Recurse -File
 
 Write-Host "[*] Found $($files.Count) file(s)" -ForegroundColor Cyan
 
 # ── Build inventory ───────────────────────────────────────────────────────────
 
-# We will collect one object per file and store them all in this list
-$inventory = @()
+$inventory = @()   # successfully processed files
+$skipped   = @()   # files we couldn't read (locked, no permission, etc.)
 
 foreach ($file in $files) {
 
-    # Compute SHA-256 hash of the file content
-    # Get-FileHash returns an object; .Hash is the hex string
-    $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256).Hash
+    # Wrap each file in Try/Catch so one locked/protected file doesn't
+    # stop the entire scan — we log it and move on to the next file
+    try {
 
-    # Build a structured object with all the fields we need
-    $entry = [PSCustomObject]@{
-        Name         = $file.Name                        # filename with extension
-        Extension    = $file.Extension.ToLower()         # e.g. ".exe" (lowercase for easy comparison)
-        SizeBytes    = $file.Length                      # size in bytes
-        CreatedAt    = $file.CreationTime.ToString("yyyy-MM-dd HH:mm:ss")
-        ModifiedAt   = $file.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
-        FullPath     = $file.FullName                    # absolute path on disk
-        SHA256       = $hash
+        # Get-FileHash will throw if the file is locked or unreadable
+        $hash = (Get-FileHash -Path $file.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+
+        $entry = [PSCustomObject]@{
+            Name       = $file.Name
+            Extension  = $file.Extension.ToLower()
+            SizeBytes  = $file.Length
+            CreatedAt  = $file.CreationTime.ToString("yyyy-MM-dd HH:mm:ss")
+            ModifiedAt = $file.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss")
+            FullPath   = $file.FullName
+            SHA256     = $hash
+        }
+
+        $inventory += $entry
+
+    } catch {
+        # $_.Exception.Message contains the actual error (e.g. "Access is denied")
+        Write-Warning "Skipped (cannot read): $($file.FullName) — $($_.Exception.Message)"
+
+        # Record skipped files separately so the analyst knows what was missed
+        $skipped += [PSCustomObject]@{
+            FullPath = $file.FullName
+            Reason   = $_.Exception.Message
+        }
     }
-
-    $inventory += $entry
 }
 
-# ── Export to CSV ─────────────────────────────────────────────────────────────
+Write-Host "[*] Processed: $($inventory.Count) file(s), Skipped: $($skipped.Count) file(s)" -ForegroundColor Cyan
 
-# Resolve the data/ folder relative to where this script lives
+# ── Export to data/ ───────────────────────────────────────────────────────────
+
 $dataFolder = Join-Path $PSScriptRoot "data"
 
-# Create the data/ folder if it doesn't exist yet
 if (-not (Test-Path $dataFolder)) {
     New-Item -ItemType Directory -Path $dataFolder | Out-Null
 }
 
-$csvPath  = Join-Path $dataFolder "inventory.csv"
-$jsonPath = Join-Path $dataFolder "inventory.json"
+$csvPath     = Join-Path $dataFolder "inventory.csv"
+$jsonPath    = Join-Path $dataFolder "inventory.json"
+$skippedPath = Join-Path $dataFolder "skipped_files.txt"
 
-# Export-Csv writes one row per object; -NoTypeInformation removes the noisy header line PS adds
+# ── CSV export ────────────────────────────────────────────────────────────────
+
 $inventory | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+Write-Host "[+] CSV saved      -> $csvPath" -ForegroundColor Green
 
-Write-Host "[+] CSV saved  -> $csvPath" -ForegroundColor Green
+# ── JSON export ───────────────────────────────────────────────────────────────
 
-# ── Export to JSON ────────────────────────────────────────────────────────────
+# @() forces an array even when $inventory has only 1 item
+# Without this, ConvertTo-Json outputs {} instead of [{}] and breaks Python
+(@($inventory) | ConvertTo-Json -Depth 3) | Set-Content -Path $jsonPath -Encoding UTF8
+Write-Host "[+] JSON saved     -> $jsonPath" -ForegroundColor Green
 
-# ConvertTo-Json serializes the array; -Depth 3 ensures nested objects are fully expanded
-$inventory | ConvertTo-Json -Depth 3 | Set-Content -Path $jsonPath -Encoding UTF8
+# ── Skipped files log ─────────────────────────────────────────────────────────
 
-Write-Host "[+] JSON saved -> $jsonPath" -ForegroundColor Green
+if ($skipped.Count -gt 0) {
+    $skipped | ForEach-Object { "$($_.FullPath) — $($_.Reason)" } |
+        Set-Content -Path $skippedPath -Encoding UTF8
+    Write-Host "[!] Skipped log    -> $skippedPath ($($skipped.Count) file(s))" -ForegroundColor Yellow
+}
+
 Write-Host "[*] Done." -ForegroundColor Cyan
