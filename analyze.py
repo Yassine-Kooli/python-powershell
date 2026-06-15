@@ -100,7 +100,7 @@ if not input_path.exists():
     print(f"[ERROR] Inventory file not found: {input_path}")
     exit(1)
 
-with open(input_path, "r", encoding="utf-8") as f:
+with open(input_path, "r", encoding="utf-8-sig") as f:
     inventory = json.load(f)
 
 # PowerShell exports a single object (not array) when only 1 file is found
