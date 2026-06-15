@@ -383,4 +383,111 @@ with open(report_txt, "w", encoding="utf-8") as f:
     f.write("End of report\n")
 
 print(f"[+] TXT report   -> {report_txt}")
+
+# -- 4. HTML report -----------------------------------------------------------
+
+def risk_badge(level: str) -> str:
+    colors = {"HIGH": "#e74c3c", "MEDIUM": "#e67e22", "LOW": "#27ae60"}
+    return f'<span style="background:{colors[level]};color:#fff;padding:3px 10px;border-radius:12px;font-size:0.8em;font-weight:700;">{level}</span>'
+
+def size_human(b: int) -> str:
+    if b < 1024: return f"{b} B"
+    if b < 1024**2: return f"{b/1024:.1f} KB"
+    return f"{b/1024**2:.1f} MB"
+
+report_html = results_dir / "risk_report.html"
+with open(report_html, "w", encoding="utf-8") as f:
+    f.write(f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Suspicious File Analysis Report</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{ font-family: 'Segoe UI', Arial, sans-serif; background: #0f1117; color: #e0e0e0; padding: 30px; }}
+  h1 {{ font-size: 1.6em; color: #fff; margin-bottom: 4px; }}
+  .subtitle {{ color: #888; font-size: 0.9em; margin-bottom: 30px; }}
+  .cards {{ display: flex; gap: 16px; margin-bottom: 30px; flex-wrap: wrap; }}
+  .card {{ background: #1a1d27; border-radius: 10px; padding: 20px 28px; min-width: 140px; text-align: center; border-top: 4px solid #444; }}
+  .card.high {{ border-color: #e74c3c; }}
+  .card.medium {{ border-color: #e67e22; }}
+  .card.low {{ border-color: #27ae60; }}
+  .card.total {{ border-color: #3498db; }}
+  .card-num {{ font-size: 2.2em; font-weight: 700; color: #fff; }}
+  .card-label {{ font-size: 0.8em; color: #888; margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }}
+  table {{ width: 100%; border-collapse: collapse; background: #1a1d27; border-radius: 10px; overflow: hidden; }}
+  th {{ background: #22263a; color: #aaa; font-size: 0.78em; text-transform: uppercase; letter-spacing: 1px; padding: 12px 16px; text-align: left; }}
+  td {{ padding: 12px 16px; border-bottom: 1px solid #22263a; font-size: 0.88em; vertical-align: top; }}
+  tr:last-child td {{ border-bottom: none; }}
+  tr:hover td {{ background: #1e2235; }}
+  .hash {{ font-family: monospace; font-size: 0.78em; color: #7f8c8d; word-break: break-all; }}
+  .path {{ font-family: monospace; font-size: 0.8em; color: #95a5a6; word-break: break-all; }}
+  .reasons li {{ margin-left: 16px; color: #bdc3c7; font-size: 0.85em; margin-bottom: 3px; }}
+  .vt-link {{ color: #3498db; text-decoration: none; font-size: 0.82em; }}
+  .vt-link:hover {{ text-decoration: underline; }}
+  .db-hit {{ background: #2d1f1f; color: #e74c3c; padding: 2px 8px; border-radius: 6px; font-size: 0.8em; }}
+  .section-title {{ font-size: 1em; color: #aaa; margin: 28px 0 12px; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #22263a; padding-bottom: 6px; }}
+  .vt-on {{ color: #2ecc71; font-size: 0.82em; }}
+  .vt-off {{ color: #888; font-size: 0.82em; }}
+</style>
+</head>
+<body>
+
+<h1>Suspicious File Analysis Report</h1>
+<p class="subtitle">
+  {"VirusTotal lookup: <span class='vt-on'>ENABLED</span>" if vt_enabled else "VirusTotal lookup: <span class='vt-off'>DISABLED</span>"}
+</p>
+
+<div class="cards">
+  <div class="card total"><div class="card-num">{len(results)}</div><div class="card-label">Total Files</div></div>
+  <div class="card high"><div class="card-num">{high}</div><div class="card-label">High Risk</div></div>
+  <div class="card medium"><div class="card-num">{medium}</div><div class="card-label">Medium Risk</div></div>
+  <div class="card low"><div class="card-num">{low}</div><div class="card-label">Low Risk</div></div>
+</div>
+
+<p class="section-title">File Details</p>
+<table>
+  <thead>
+    <tr>
+      <th>Risk</th>
+      <th>File</th>
+      <th>Size</th>
+      <th>SHA-256</th>
+      <th>Detections</th>
+    </tr>
+  </thead>
+  <tbody>
+""")
+
+    for r in results:
+        reasons_html = "<ul class='reasons'>" + "".join(f"<li>{reason}</li>" for reason in r["Reasons"]) + "</ul>" if r["Reasons"] else "<span style='color:#555'>None</span>"
+
+        vt_cell = ""
+        if r["LocalDBMatch"]:
+            vt_cell += f'<span class="db-hit">Local DB: {r["LocalDBMatch"]}</span><br>'
+        if r["VTFound"]:
+            vt_cell += f'<a class="vt-link" href="{r["VTLink"]}" target="_blank">{r["VTMalicious"]}/{r["VTTotal"]} engines flagged</a>'
+        elif vt_enabled and not r["LocalDBMatch"]:
+            vt_cell += '<span style="color:#555;font-size:0.82em">Not in VT database</span>'
+
+        f.write(f"""    <tr>
+      <td>{risk_badge(r["RiskLevel"])}<br><span style="color:#888;font-size:0.78em">score: {r["Score"]}</span></td>
+      <td>
+        <strong>{r["Name"]}</strong><br>
+        <span class="path">{r["FullPath"]}</span>
+      </td>
+      <td style="white-space:nowrap">{size_human(r["SizeBytes"])}</td>
+      <td><span class="hash">{r["SHA256"]}</span></td>
+      <td>{reasons_html}{("<br>" + vt_cell) if vt_cell else ""}</td>
+    </tr>
+""")
+
+    f.write("""  </tbody>
+</table>
+</body>
+</html>
+""")
+
+print(f"[+] HTML report  -> {report_html}")
 print("[*] Analysis complete.")
